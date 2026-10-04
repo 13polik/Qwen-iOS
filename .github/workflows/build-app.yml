@@ -1,4 +1,4 @@
-name: Build Qwen Chat
+name: Build Qwen Local
 
 on:
   workflow_dispatch:
@@ -15,110 +15,62 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 
-      - name: Build llama.cpp
+      - name: Build llama.cpp XCFramework
         run: |
           cd llama.cpp
           ./build-xcframework.sh ios-device
 
       - name: Download Qwen 0.5B
         run: |
-          mkdir -p QwenChat/Models
+          mkdir -p llama.cpp/examples/llama.swiftui/Models
+
           curl -L \
-            -o QwenChat/Models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+            -o llama.cpp/examples/llama.swiftui/Models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
             "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
-      - name: Create iOS project
+      - name: Copy XCFramework
         run: |
-          mkdir -p QwenChat/QwenChat
+          cp -R \
+            llama.cpp/build-apple/llama.xcframework \
+            llama.cpp/examples/llama.swiftui/
 
-          cat > QwenChat/QwenChat/Info.plist <<'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleDisplayName</key>
-              <string>Qwen Local</string>
-              <key>CFBundleIdentifier</key>
-              <string>pl.13polik.QwenLocal</string>
-              <key>CFBundleName</key>
-              <string>Qwen Local</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>UILaunchScreen</key>
-              <dict/>
-          </dict>
-          </plist>
-          EOF
-
-          cat > QwenChat/QwenChat/QwenChatApp.swift <<'EOF'
-          import SwiftUI
-
-          @main
-          struct QwenChatApp: App {
-              var body: some Scene {
-                  WindowGroup {
-                      ContentView()
-                  }
-              }
-          }
-          EOF
-
-          cat > QwenChat/QwenChat/ContentView.swift <<'EOF'
-          import SwiftUI
-
-          struct ContentView: View {
-              @State private var message = ""
-              @State private var response = "Qwen 0.5B — lokalny model"
-
-              var body: some View {
-                  VStack(spacing: 16) {
-                      Text("Qwen Local")
-                          .font(.largeTitle.bold())
-
-                      ScrollView {
-                          Text(response)
-                              .frame(maxWidth: .infinity, alignment: .leading)
-                              .padding()
-                      }
-
-                      HStack {
-                          TextField("Napisz wiadomość…", text: $message)
-                              .textFieldStyle(.roundedBorder)
-
-                          Button("Wyślij") {
-                              response = "Model zostanie podłączony w następnym kroku."
-                          }
-                      }
-                  }
-                  .padding()
-              }
-          }
-          EOF
-
-      - name: Create Xcode project
+      - name: Show project
         run: |
-          cd QwenChat
+          find llama.cpp/examples/llama.swiftui -maxdepth 3 -type f | sort
 
-          swift package init --type executable
-
-          rm -rf Sources
-          mkdir -p Sources/QwenChat
-
-          cp QwenChat/QwenChatApp.swift Sources/QwenChat/
-          cp QwenChat/ContentView.swift Sources/QwenChat/
-
-      - name: Show files
+      - name: Build iOS app
         run: |
-          find QwenChat -maxdepth 4 -type f -print
+          cd llama.cpp
 
-      - name: Upload project
+          xcodebuild \
+            -project examples/llama.swiftui/llama.swiftui.xcodeproj \
+            -scheme llama.swiftui \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Find app
+        run: |
+          find llama.cpp -name "*.app" -type d -print
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+
+          APP_PATH=$(find llama.cpp -name "*.app" -type d | head -n 1)
+
+          echo "Using app:"
+          echo "$APP_PATH"
+
+          cp -R "$APP_PATH" Payload/
+
+          zip -r QwenLocal.ipa Payload
+
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: QwenChat-project
-          path: QwenChat
+          name: QwenLocal-IPA
+          path: QwenLocal.ipa
