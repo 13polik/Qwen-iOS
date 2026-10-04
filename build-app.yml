@@ -1,0 +1,33 @@
+name: Build Qwen Chat
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+
+      - name: Build llama.cpp for iOS
+        run: |
+          cd llama.cpp
+          ./build-xcframework.sh ios-sim ios-device
+
+      - name: Check SwiftUI example
+        run: |
+          find llama.cpp/examples/llama.swiftui -maxdepth 3 -type f | head -50
+          echo "XCFramework:"
+          ls -lah llama.cpp/build-apple/llama.xcframework
+
+      - name: Upload llama framework
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-xcframework
+          path: llama.cpp/build-apple/llama.xcframework
