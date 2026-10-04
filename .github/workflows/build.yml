@@ -1,0 +1,32 @@
+name: Build Qwen iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone llama.cpp
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+
+      - name: Build llama.cpp XCFramework
+        run: |
+          cd llama.cpp
+          ./build-xcframework.sh
+
+      - name: Check files
+        run: |
+          ls -lah llama.cpp/build-apple/
+          ls -lah llama.cpp/build-apple/llama.xcframework/
+
+      - name: Upload llama XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-xcframework
+          path: llama.cpp/build-apple/llama.xcframework/
