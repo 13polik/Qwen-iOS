@@ -8,8 +8,12 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download iOS platform
+        run: |
+          xcodebuild -downloadPlatform iOS
 
       - name: Clone llama.cpp
         run: |
@@ -18,59 +22,114 @@ jobs:
       - name: Build llama.cpp XCFramework
         run: |
           cd llama.cpp
-          ./build-xcframework.sh ios-device
+          ./build-xcframework.sh
+
+      - name: Check llama.swiftui project
+        run: |
+          test -f llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj
+          echo "Xcode project found"
 
       - name: Download Qwen 0.5B
         run: |
-          mkdir -p llama.cpp/examples/llama.swiftui/Models
+          mkdir -p llama.cpp/examples/llama.swiftui/llama.swiftui/models
 
-          curl -L \
-            -o llama.cpp/examples/llama.swiftui/Models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+          curl -L --fail \
+            -o llama.cpp/examples/llama.swiftui/llama.swiftui/models/qwen2.5-0.5b-instruct-q4_k_m.gguf \
             "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 
-      - name: Copy XCFramework
+          ls -lh llama.cpp/examples/llama.swiftui/llama.swiftui/models/
+
+      - name: Copy llama XCFramework
         run: |
           cp -R \
             llama.cpp/build-apple/llama.xcframework \
             llama.cpp/examples/llama.swiftui/
 
-      - name: Show project
-        run: |
-          find llama.cpp/examples/llama.swiftui -maxdepth 3 -type f | sort
+          echo "XCFramework:"
+          ls -la llama.cpp/examples/llama.swiftui/llama.xcframework
 
-      - name: Build iOS app
+      - name: Prepare Qwen app
+        run: |
+          cd llama.cpp/examples/llama.swiftui
+
+          echo "Project contents:"
+          find . -maxdepth 2 -type f | sort
+
+      - name: Build iOS application
         run: |
           cd llama.cpp
+
+          rm -rf build-ios
 
           xcodebuild \
             -project examples/llama.swiftui/llama.swiftui.xcodeproj \
             -scheme llama.swiftui \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
+            -derivedDataPath build-ios \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            FRAMEWORK_FOLDER_PATH=./build-ios \
             build
 
-      - name: Find app
+      - name: Locate application
         run: |
-          find llama.cpp -name "*.app" -type d -print
+          echo "Searching for .app..."
 
-      - name: Package IPA
+          find llama.cpp/build-ios \
+            -type d \
+            -name "*.app" \
+            -print
+
+      - name: Verify application
         run: |
+          APP_PATH=$(find llama.cpp/build-ios \
+            -type d \
+            -name "*.app" \
+            | head -n 1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No .app was produced."
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH"
+
+          test -f "$APP_PATH/Info.plist"
+
+          echo "Application verified."
+
+      - name: Rename application
+        run: |
+          APP_PATH=$(find llama.cpp/build-ios \
+            -type d \
+            -name "*.app" \
+            | head -n 1)
+
           mkdir -p Payload
 
-          APP_PATH=$(find llama.cpp -name "*.app" -type d | head -n 1)
+          cp -R "$APP_PATH" Payload/QwenLocal.app
 
-          echo "Using app:"
-          echo "$APP_PATH"
+          echo "Prepared:"
+          ls -la Payload/QwenLocal.app
 
-          cp -R "$APP_PATH" Payload/
+      - name: Create IPA
+        run: |
+          rm -f QwenLocal.ipa
 
-          zip -r QwenLocal.ipa Payload
+          zip -qry QwenLocal.ipa Payload
+
+          echo "IPA created:"
+          ls -lh QwenLocal.ipa
+
+      - name: Verify IPA
+        run: |
+          unzip -l QwenLocal.ipa | head -30
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: QwenLocal-IPA
           path: QwenLocal.ipa
+          if-no-files-found: error
