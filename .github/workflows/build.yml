@@ -18,7 +18,7 @@ jobs:
       - name: Build llama.cpp XCFramework
         run: |
           cd llama.cpp
-          ./build-xcframework.sh
+          ./build-xcframework.sh ios-sim ios-device
 
       - name: Check files
         run: |
