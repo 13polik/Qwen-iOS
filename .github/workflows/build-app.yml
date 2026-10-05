@@ -1,4 +1,5 @@
-name: Build Qwen Local 0.2
+```yaml
+name: Build Qwen Local 0.3
 
 on:
   workflow_dispatch:
@@ -17,6 +18,9 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 
+          echo "llama.cpp cloned."
+          git -C llama.cpp rev-parse HEAD
+
       # =========================================================
       # 2. Pobranie platformy iOS
       # =========================================================
@@ -26,31 +30,225 @@ jobs:
           xcodebuild -downloadPlatform iOS
 
       # =========================================================
-      # 3. Budowanie llama.xcframework
+      # 3. Pobranie Qwen2.5 1.5B Q4_K_M
+      # =========================================================
+
+      - name: Download Qwen 1.5B
+        run: |
+          mkdir -p \
+            llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models
+
+          curl -L --fail --retry 3 \
+            -o llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf \
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+          echo "Downloaded model:"
+          ls -lh \
+            llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf
+
+      # =========================================================
+      # 4. Weryfikacja modelu GGUF
+      # =========================================================
+
+      - name: Verify GGUF model
+        run: |
+          MODEL="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf"
+
+          test -f "$MODEL"
+
+          SIZE=$(stat -f%z "$MODEL")
+
+          echo "Model size: $SIZE bytes"
+
+          if [ "$SIZE" -lt 500000000 ]; then
+            echo "ERROR: model is unexpectedly small."
+            exit 1
+          fi
+
+          echo "GGUF model looks valid."
+
+      # =========================================================
+      # 5. Patch LlamaState.swift
+      #
+      # Model jest teraz ładowany z Resources/models
+      # PRZED kompilacją, a nie dopiero po buildzie.
+      # =========================================================
+
+      - name: Configure Qwen model
+        run: |
+          FILE="llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift"
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift")
+          text = path.read_text()
+
+          old = '''    private let defaultModels: [Model] = [
+          Model(name: "TinyLlama-1.1B (Q4_0, 0.6 GiB)",url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-1T-OpenOrca-GGUF/resolve/main/tinyllama-1.1b-1t-openorca.Q4_0.gguf?download=true",filename: "tinyllama-1.1b-1t-openorca.Q4_0.gguf", status: "download"),
+          Model(
+              name: "TinyLlama-1.1B Chat (Q8_0, 1.1 GiB)",
+              url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q8_0.gguf?download=true",
+              filename: "tinyllama-1.1b-chat-v1.0.Q8_0.gguf", status: "download"
+          ),
+          Model(
+              name: "TinyLlama-1.1B (F16, 2.2 GiB)",
+              url: "https://huggingface.co/ggml-org/models/resolve/main/tinyllama-1.1b/ggml-model-f16.gguf?download=true",
+              filename: "tinyllama-1.1b-f16.gguf", status: "download"
+          ),
+          Model(
+              name: "Phi-2.7B (Q4_0, 1.6 GiB)",
+              url: "https://huggingface.co/ggml-org/models/resolve/main/phi-2/ggml-model-q4_0.gguf?download=true",
+              filename: "phi-2-q4_0.gguf", status: "download"
+          ),
+
+          Model(
+              name: "Phi-2.7B (Q8_0, 2.8 GiB)",
+              url: "https://huggingface.co/ggml-org/models/resolve/main/phi-2/ggml-model-q8_0.gguf?download=true",
+              filename: "phi-2-q8_0.gguf", status: "download"
+          ),
+          Model(
+              name: "Mistral-7B-v0.1 (Q4_0, 3.8 GiB)",
+              url: "https://huggingface.co/TheBloke/Mistral-7B-v0.1-GGUF/resolve/main/mistral-7b-v0.1.Q4_0.gguf?download=true",
+              filename: "mistral-7b-v0.1.Q4_0.gguf", status: "download"
+          ),
+          Model(
+              name: "OpenHermes-2.5-Mistral-7B (Q3_K_M, 3.52 GiB)",
+              url: "https://huggingface.co/TheBloke/OpenHermes-2.5-Mistral-7B-GGUF/resolve/main/openhermes-2.5-mistral-7b.Q3_K_M.gguf?download=true",
+              filename: "openhermes-2.5-mistral-7b.Q3_K_M.gguf", status: "download"
+          )
+      ]
+      '''
+
+          new = '''    private let defaultModels: [Model] = [
+          Model(
+              name: "Qwen2.5-1.5B-Instruct (Q4_K_M)",
+              url: "",
+              filename: "ggml-model.gguf",
+              status: "downloaded"
+          )
+      ]
+      '''
+
+          if old not in text:
+              raise SystemExit("ERROR: defaultModels block was not found.")
+
+          text = text.replace(old, new)
+
+          path.write_text(text)
+          print("LlamaState.swift patched successfully.")
+          PY
+
+          echo "Checking Qwen configuration:"
+          grep -A8 -B2 'defaultModels' "$FILE"
+
+      # =========================================================
+      # 6. Patch LibLlama.swift
+      #
+      # Lepszy sampling + repeat penalty.
+      # =========================================================
+
+      - name: Configure Qwen sampling
+        run: |
+          FILE="llama.cpp/examples/llama.swiftui/llama.cpp.swift/LibLlama.swift"
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("llama.cpp/examples/llama.swiftui/llama.cpp.swift/LibLlama.swift")
+          text = path.read_text()
+
+          old = '''        let sparams = llama_sampler_chain_default_params()
+          self.sampling = llama_sampler_chain_init(sparams)
+
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.4))
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
+          '''
+
+          new = '''        let sparams = llama_sampler_chain_default_params()
+          self.sampling = llama_sampler_chain_init(sparams)
+
+          // Qwen Local 0.3 sampling
+          // Lower temperature = more controlled answers
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_k(40))
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(0.90, 1))
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.65))
+
+          // Reduce repetitive output
+          llama_sampler_chain_add(
+              self.sampling,
+              llama_sampler_init_penalties(
+                  64,
+                  1.08,
+                  0.0,
+                  0.0
+              )
+          )
+
+          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
+          '''
+
+          if old not in text:
+              raise SystemExit("ERROR: sampler block was not found.")
+
+          text = text.replace(old, new)
+
+          # Reset generation state at the beginning of every completion.
+          old_init = '''    func completion_init(text: String) {
+          print("attempting to complete \\"\\(text)\\"")
+          '''
+
+          new_init = '''    func completion_init(text: String) {
+          is_done = false
+          n_cur = 0
+          n_decode = 0
+
+          print("attempting to complete \\"\\(text)\\"")
+          '''
+
+          if old_init not in text:
+              raise SystemExit("ERROR: completion_init block was not found.")
+
+          text = text.replace(old_init, new_init)
+
+          path.write_text(text)
+          print("LibLlama.swift patched successfully.")
+          PY
+
+          echo "Checking sampler configuration:"
+          grep -A25 'Qwen Local 0.3 sampling' "$FILE"
+
+      # =========================================================
+      # 7. Sprawdzenie projektu Xcode
+      # =========================================================
+
+      - name: Check Xcode project
+        run: |
+          PROJECT="llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj"
+
+          test -f "$PROJECT"
+
+          echo "Xcode project found."
+
+          grep -n "models in Resources" "$PROJECT"
+          grep -n "Resources/models" "$PROJECT"
+
+      # =========================================================
+      # 8. Budowanie llama.xcframework
       # =========================================================
 
       - name: Build llama XCFramework
         run: |
           cd llama.cpp
+
           ./build-xcframework.sh
 
-      # =========================================================
-      # 4. Pobranie Qwen2.5 1.5B
-      # =========================================================
+          test -d build-apple/llama.xcframework
 
-      - name: Download Qwen 1.5B
-        run: |
-          mkdir -p model
-
-          curl -L --fail --retry 3 \
-            -o model/qwen.gguf \
-            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
-
-          echo "Downloaded Qwen model:"
-          ls -lh model/qwen.gguf
+          echo "XCFramework built successfully."
 
       # =========================================================
-      # 5. Kopia frameworku
+      # 9. Kopia frameworku do projektu SwiftUI
       # =========================================================
 
       - name: Copy llama XCFramework
@@ -62,18 +260,20 @@ jobs:
           echo "XCFramework copied."
 
       # =========================================================
-      # 6. Sprawdzenie projektu
+      # 10. Kontrola zasobów PRZED buildem
       # =========================================================
 
-      - name: Check Xcode project
+      - name: Verify bundled model source
         run: |
-          test -f \
-            llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj
+          MODEL="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf"
 
-          echo "Xcode project found."
+          test -f "$MODEL"
+
+          echo "Model that will be bundled:"
+          ls -lh "$MODEL"
 
       # =========================================================
-      # 7. Budowanie aplikacji
+      # 11. Budowanie aplikacji
       # =========================================================
 
       - name: Build iOS application
@@ -88,14 +288,18 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build-ios \
+            -configuration Release \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGN_IDENTITY="" \
             FRAMEWORK_FOLDER_PATH=./build-ios \
+            PRODUCT_BUNDLE_IDENTIFIER=pl.13polik.QwenLocal \
+            MARKETING_VERSION=0.3 \
+            CURRENT_PROJECT_VERSION=3 \
             build
 
       # =========================================================
-      # 8. Znalezienie .app
+      # 12. Znalezienie .app
       # =========================================================
 
       - name: Locate application
@@ -108,10 +312,10 @@ jobs:
             -print
 
       # =========================================================
-      # 9. Instalacja modelu w bundle
+      # 13. Konfiguracja aplikacji
       # =========================================================
 
-      - name: Install Qwen into app bundle
+      - name: Configure application
         run: |
           APP_PATH=$(find llama.cpp/build-ios \
             -type d \
@@ -124,25 +328,6 @@ jobs:
           fi
 
           echo "APP_PATH=$APP_PATH"
-
-          mkdir -p "$APP_PATH/models"
-
-          cp model/qwen.gguf \
-            "$APP_PATH/models/ggml-model.gguf"
-
-          echo "Qwen model installed:"
-          ls -lh "$APP_PATH/models/ggml-model.gguf"
-
-      # =========================================================
-      # 10. Konfiguracja aplikacji
-      # =========================================================
-
-      - name: Configure application
-        run: |
-          APP_PATH=$(find llama.cpp/build-ios \
-            -type d \
-            -name "*.app" \
-            | head -n 1)
 
           /usr/libexec/PlistBuddy \
             -c "Set :CFBundleDisplayName Qwen Local" \
@@ -157,17 +342,73 @@ jobs:
             "$APP_PATH/Info.plist" || true
 
           /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleShortVersionString 0.2" \
+            -c "Set :CFBundleShortVersionString 0.3" \
             "$APP_PATH/Info.plist" || true
 
           /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleVersion 2" \
+            -c "Set :CFBundleVersion 3" \
             "$APP_PATH/Info.plist" || true
 
           echo "Application configured."
 
       # =========================================================
-      # 11. Ikona Qwen Local
+      # 14. Kontrola modelu W GOTOWYM .app
+      # =========================================================
+
+      - name: Verify model inside app
+        run: |
+          APP_PATH=$(find llama.cpp/build-ios \
+            -type d \
+            -name "*.app" \
+            | head -n 1)
+
+          MODEL="$APP_PATH/models/ggml-model.gguf"
+
+          if [ ! -f "$MODEL" ]; then
+            echo "ERROR: Qwen model was NOT bundled into the app."
+            echo "Contents of app:"
+            find "$APP_PATH" -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+          echo "SUCCESS: Qwen model is inside the compiled app."
+
+          ls -lh "$MODEL"
+
+      # =========================================================
+      # 15. Kontrola modelu + projektu
+      # =========================================================
+
+      - name: Verify Qwen Local 0.3
+        run: |
+          APP_PATH=$(find llama.cpp/build-ios \
+            -type d \
+            -name "*.app" \
+            | head -n 1)
+
+          echo "===== APP ====="
+          ls -lh "$APP_PATH"
+
+          echo
+          echo "===== MODEL ====="
+          ls -lh "$APP_PATH/models/ggml-model.gguf"
+
+          echo
+          echo "===== PLIST ====="
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleDisplayName" \
+            "$APP_PATH/Info.plist"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            "$APP_PATH/Info.plist"
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleShortVersionString" \
+            "$APP_PATH/Info.plist"
+
+      # =========================================================
+      # 16. Generowanie ikony Qwen Local
       # =========================================================
 
       - name: Generate Qwen Local icon
@@ -288,7 +529,7 @@ jobs:
           ls -lh QwenIcon.png
 
       # =========================================================
-      # 12. Rozmiary ikon
+      # 17. Rozmiary ikon
       # =========================================================
 
       - name: Prepare icon files
@@ -326,7 +567,7 @@ jobs:
             --out "$APP_PATH/AppIcon-1024.png"
 
       # =========================================================
-      # 13. Rejestracja ikon
+      # 18. Rejestracja ikon
       # =========================================================
 
       - name: Configure app icons
@@ -384,26 +625,10 @@ jobs:
             -c "Add :CFBundleIconFiles:8 string AppIcon-1024.png" \
             "$APP_PATH/Info.plist"
 
-      # =========================================================
-      # 14. Kontrola modelu
-      # =========================================================
-
-      - name: Verify Qwen model
-        run: |
-          APP_PATH=$(find llama.cpp/build-ios \
-            -type d \
-            -name "*.app" \
-            | head -n 1)
-
-          test -f \
-            "$APP_PATH/models/ggml-model.gguf"
-
-          echo "Qwen 1.5B:"
-          ls -lh \
-            "$APP_PATH/models/ggml-model.gguf"
+          echo "Icons configured."
 
       # =========================================================
-      # 15. Przygotowanie IPA
+      # 19. Przygotowanie IPA
       # =========================================================
 
       - name: Prepare IPA
@@ -414,42 +639,57 @@ jobs:
             | head -n 1)
 
           rm -rf Payload
-          mkdir Payload
+          mkdir -p Payload
 
           cp -R \
             "$APP_PATH" \
             Payload/QwenLocal.app
 
+          echo "Payload prepared."
+
       # =========================================================
-      # 16. Tworzenie IPA
+      # 20. Tworzenie IPA
       # =========================================================
 
       - name: Create IPA
         run: |
-          rm -f QwenLocal.ipa
+          rm -f QwenLocal-0.3.ipa
 
           zip -qry \
-            QwenLocal.ipa \
+            QwenLocal-0.3.ipa \
             Payload
 
-          ls -lh QwenLocal.ipa
+          ls -lh QwenLocal-0.3.ipa
 
       # =========================================================
-      # 17. Weryfikacja
+      # 21. Ostateczna weryfikacja IPA
       # =========================================================
 
       - name: Verify IPA
         run: |
-          unzip -l QwenLocal.ipa | grep -E \
-            "QwenLocal.app|ggml-model.gguf|AppIcon"
+          echo "Checking IPA contents..."
+
+          unzip -l QwenLocal-0.3.ipa | grep \
+            "Payload/QwenLocal.app/models/ggml-model.gguf"
+
+          unzip -l QwenLocal-0.3.ipa | grep \
+            "Payload/QwenLocal.app/AppIcon"
+
+          unzip -l QwenLocal-0.3.ipa | grep \
+            "Payload/QwenLocal.app/Info.plist"
+
+          echo
+          echo "Qwen Local 0.3 IPA verification successful."
 
       # =========================================================
-      # 18. Artifact
+      # 22. Artifact
       # =========================================================
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: QwenLocal-0.2-IPA
-          path: QwenLocal.ipa
+          name: QwenLocal-0.3-IPA
+          path: QwenLocal-0.3.ipa
           if-no-files-found: error
+          retention-days: 7
+```
