@@ -11,7 +11,7 @@ jobs:
     steps:
 
       # =========================================================
-      # 1. Pobranie llama.cpp
+      # 1. Pobranie aktualnego llama.cpp
       # =========================================================
 
       - name: Clone llama.cpp
@@ -30,24 +30,27 @@ jobs:
           xcodebuild -downloadPlatform iOS
 
       # =========================================================
-      # 3. Pobranie Qwen2.5 1.5B Q4_K_M
+      # 3. Pobranie Qwen2.5-1.5B-Instruct Q4_K_M
       # =========================================================
 
       - name: Download Qwen 1.5B
         run: |
-          mkdir -p \
-            llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models
+          MODEL_DIR="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models"
 
-          curl -L --fail --retry 3 \
-            -o llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf \
+          mkdir -p "$MODEL_DIR"
+
+          curl -L \
+            --fail \
+            --retry 3 \
+            --retry-delay 2 \
+            -o "$MODEL_DIR/ggml-model.gguf" \
             "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
-          echo "Downloaded model:"
-          ls -lh \
-            llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf
+          echo "Downloaded Qwen model:"
+          ls -lh "$MODEL_DIR/ggml-model.gguf"
 
       # =========================================================
-      # 4. Weryfikacja modelu GGUF
+      # 4. Weryfikacja pobranego GGUF
       # =========================================================
 
       - name: Verify GGUF model
@@ -65,161 +68,222 @@ jobs:
             exit 1
           fi
 
-          echo "GGUF model looks valid."
+          echo "GGUF model passed basic size check."
 
       # =========================================================
-      # 5. Patch LlamaState.swift
+      # 5. Konfiguracja LlamaState.swift
       #
-      # Model jest teraz ładowany z Resources/models
-      # PRZED kompilacją, a nie dopiero po buildzie.
+      # Oficjalny LlamaState ładuje:
+      #
+      # Bundle.main/.../models/ggml-model.gguf
+      #
+      # Zmieniamy tylko listę modeli tak, aby Qwen był jedynym
+      # modelem prezentowanym przez aplikację.
       # =========================================================
 
       - name: Configure Qwen model
+        shell: bash
         run: |
           FILE="llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift"
 
+          test -f "$FILE"
+
           python3 <<'PY'
           from pathlib import Path
+          import re
 
-          path = Path("llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift")
+          path = Path(
+              "llama.cpp/examples/llama.swiftui/"
+              "llama.swiftui/Models/LlamaState.swift"
+          )
+
           text = path.read_text()
 
-          old = '''    private let defaultModels: [Model] = [
-          Model(name: "TinyLlama-1.1B (Q4_0, 0.6 GiB)",url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-1T-OpenOrca-GGUF/resolve/main/tinyllama-1.1b-1t-openorca.Q4_0.gguf?download=true",filename: "tinyllama-1.1b-1t-openorca.Q4_0.gguf", status: "download"),
-          Model(
-              name: "TinyLlama-1.1B Chat (Q8_0, 1.1 GiB)",
-              url: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q8_0.gguf?download=true",
-              filename: "tinyllama-1.1b-chat-v1.0.Q8_0.gguf", status: "download"
-          ),
-          Model(
-              name: "TinyLlama-1.1B (F16, 2.2 GiB)",
-              url: "https://huggingface.co/ggml-org/models/resolve/main/tinyllama-1.1b/ggml-model-f16.gguf?download=true",
-              filename: "tinyllama-1.1b-f16.gguf", status: "download"
-          ),
-          Model(
-              name: "Phi-2.7B (Q4_0, 1.6 GiB)",
-              url: "https://huggingface.co/ggml-org/models/resolve/main/phi-2/ggml-model-q4_0.gguf?download=true",
-              filename: "phi-2-q4_0.gguf", status: "download"
-          ),
+          replacement = '''    private let defaultModels: [Model] = [
+              Model(
+                  name: "Qwen2.5-1.5B-Instruct (Q4_K_M)",
+                  url: "",
+                  filename: "ggml-model.gguf",
+                  status: "downloaded"
+              )
+          ]
 
-          Model(
-              name: "Phi-2.7B (Q8_0, 2.8 GiB)",
-              url: "https://huggingface.co/ggml-org/models/resolve/main/phi-2/ggml-model-q8_0.gguf?download=true",
-              filename: "phi-2-q8_0.gguf", status: "download"
-          ),
-          Model(
-              name: "Mistral-7B-v0.1 (Q4_0, 3.8 GiB)",
-              url: "https://huggingface.co/TheBloke/Mistral-7B-v0.1-GGUF/resolve/main/mistral-7b-v0.1.Q4_0.gguf?download=true",
-              filename: "mistral-7b-v0.1.Q4_0.gguf", status: "download"
-          ),
-          Model(
-              name: "OpenHermes-2.5-Mistral-7B (Q3_K_M, 3.52 GiB)",
-              url: "https://huggingface.co/TheBloke/OpenHermes-2.5-Mistral-7B-GGUF/resolve/main/openhermes-2.5-mistral-7b.Q3_K_M.gguf?download=true",
-              filename: "openhermes-2.5-mistral-7b.Q3_K_M.gguf", status: "download"
+          '''
+
+          pattern = (
+              r'    private let defaultModels: \[Model\] = \[.*?\n'
+              r'    \]\n\n'
           )
-      ]
-      '''
 
-          new = '''    private let defaultModels: [Model] = [
-          Model(
-              name: "Qwen2.5-1.5B-Instruct (Q4_K_M)",
-              url: "",
-              filename: "ggml-model.gguf",
-              status: "downloaded"
+          new_text, count = re.subn(
+              pattern,
+              replacement,
+              text,
+              count=1,
+              flags=re.DOTALL
           )
-      ]
-      '''
 
-          if old not in text:
-              raise SystemExit("ERROR: defaultModels block was not found.")
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: Could not locate defaultModels block."
+              )
 
-          text = text.replace(old, new)
+          path.write_text(new_text)
 
-          path.write_text(text)
           print("LlamaState.swift patched successfully.")
           PY
 
-          echo "Checking Qwen configuration:"
-          grep -A8 -B2 'defaultModels' "$FILE"
+          echo
+          echo "===== QWEN MODEL CONFIG ====="
+
+          grep -A9 \
+            "private let defaultModels" \
+            "$FILE"
 
       # =========================================================
-      # 6. Patch LibLlama.swift
+      # 6. Konfiguracja aktualnego API samplera
       #
-      # Lepszy sampling + repeat penalty.
+      # Aktualne llama.cpp:
+      #
+      # llama_sampler_init_penalties(
+      #     n_vocab,
+      #     penalty_last_n,
+      #     penalty_repeat,
+      #     penalty_freq,
+      #     penalty_present
+      # )
+      #
+      # n_vocab pobieramy dynamicznie z vocab.
       # =========================================================
 
       - name: Configure Qwen sampling
+        shell: bash
         run: |
           FILE="llama.cpp/examples/llama.swiftui/llama.cpp.swift/LibLlama.swift"
 
+          test -f "$FILE"
+
           python3 <<'PY'
           from pathlib import Path
+          import re
 
-          path = Path("llama.cpp/examples/llama.swiftui/llama.cpp.swift/LibLlama.swift")
-          text = path.read_text()
-
-          old = '''        let sparams = llama_sampler_chain_default_params()
-          self.sampling = llama_sampler_chain_init(sparams)
-
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.4))
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
-          '''
-
-          new = '''        let sparams = llama_sampler_chain_default_params()
-          self.sampling = llama_sampler_chain_init(sparams)
-
-          // Qwen Local 0.3 sampling
-          // Lower temperature = more controlled answers
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_k(40))
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_top_p(0.90, 1))
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_temp(0.65))
-
-          // Reduce repetitive output
-          llama_sampler_chain_add(
-              self.sampling,
-              llama_sampler_init_penalties(
-                  64,
-                  1.08,
-                  0.0,
-                  0.0
-              )
+          path = Path(
+              "llama.cpp/examples/llama.swiftui/"
+              "llama.cpp.swift/LibLlama.swift"
           )
 
-          llama_sampler_chain_add(self.sampling, llama_sampler_init_dist(1234))
-          '''
+          text = path.read_text()
 
-          if old not in text:
-              raise SystemExit("ERROR: sampler block was not found.")
+          old_sampler = re.compile(
+              r'        let sparams = llama_sampler_chain_default_params\(\)\n'
+              r'        self\.sampling = llama_sampler_chain_init\(sparams\)\n'
+              r'\n'
+              r'        llama_sampler_chain_add\(self\.sampling, llama_sampler_init_temp\(0\.4\)\)\n'
+              r'        llama_sampler_chain_add\(self\.sampling, llama_sampler_init_dist\(1234\)\)'
+          )
 
-          text = text.replace(old, new)
+          new_sampler = '''        let sparams = llama_sampler_chain_default_params()
+                  self.sampling = llama_sampler_chain_init(sparams)
 
-          # Reset generation state at the beginning of every completion.
-          old_init = '''    func completion_init(text: String) {
-          print("attempting to complete \\"\\(text)\\"")
-          '''
+                  // Qwen Local 0.3 sampling.
+                  //
+                  // Current llama.cpp API:
+                  // llama_sampler_init_penalties(
+                  //     n_vocab,
+                  //     penalty_last_n,
+                  //     penalty_repeat,
+                  //     penalty_freq,
+                  //     penalty_present
+                  // )
 
-          new_init = '''    func completion_init(text: String) {
-          is_done = false
-          n_cur = 0
-          n_decode = 0
+                  let n_vocab = llama_vocab_n_tokens(vocab)
 
-          print("attempting to complete \\"\\(text)\\"")
-          '''
+                  // Penalize recently generated tokens.
+                  llama_sampler_chain_add(
+                      self.sampling,
+                      llama_sampler_init_penalties(
+                          n_vocab,
+                          64,
+                          1.08,
+                          0.0,
+                          0.0
+                      )
+                  )
 
-          if old_init not in text:
-              raise SystemExit("ERROR: completion_init block was not found.")
+                  // Keep sampling reasonably focused.
+                  llama_sampler_chain_add(
+                      self.sampling,
+                      llama_sampler_init_top_k(40)
+                  )
 
-          text = text.replace(old_init, new_init)
+                  llama_sampler_chain_add(
+                      self.sampling,
+                      llama_sampler_init_top_p(0.90, 1)
+                  )
 
-          path.write_text(text)
-          print("LibLlama.swift patched successfully.")
+                  llama_sampler_chain_add(
+                      self.sampling,
+                      llama_sampler_init_temp(0.65)
+                  )
+
+                  // Randomized sampling.
+                  llama_sampler_chain_add(
+                      self.sampling,
+                      llama_sampler_init_dist(1234)
+                  )'''
+
+          new_text, count = old_sampler.subn(
+              new_sampler,
+              text,
+              count=1
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: Current sampler block was not found."
+              )
+
+          path.write_text(new_text)
+
+          print("LibLlama.swift sampler patched successfully.")
           PY
 
-          echo "Checking sampler configuration:"
-          grep -A25 'Qwen Local 0.3 sampling' "$FILE"
+          echo
+          echo "===== SAMPLER CONFIGURATION ====="
+
+          grep -A45 \
+            "Qwen Local 0.3 sampling" \
+            "$FILE"
 
       # =========================================================
-      # 7. Sprawdzenie projektu Xcode
+      # 7. Kontrola aktualnego API
+      # =========================================================
+
+      - name: Verify llama.cpp sampler API
+        run: |
+          HEADER="llama.cpp/include/llama.h"
+
+          test -f "$HEADER"
+
+          echo "Checking llama_sampler_init_penalties..."
+
+          grep -A8 \
+            "llama_sampler_init_penalties" \
+            "$HEADER" \
+            | head -n 12
+
+          echo
+          echo "Checking llama_vocab_n_tokens..."
+
+          grep \
+            "llama_vocab_n_tokens" \
+            "$HEADER"
+
+          echo
+          echo "Current llama.cpp sampler API detected."
+
+      # =========================================================
+      # 8. Sprawdzenie projektu Xcode
       # =========================================================
 
       - name: Check Xcode project
@@ -230,11 +294,22 @@ jobs:
 
           echo "Xcode project found."
 
-          grep -n "models in Resources" "$PROJECT"
-          grep -n "Resources/models" "$PROJECT"
+          echo
+          echo "Checking models resource..."
+
+          grep -n \
+            "models in Resources" \
+            "$PROJECT"
+
+          echo
+          echo "Checking models path..."
+
+          grep -n \
+            "path = models" \
+            "$PROJECT"
 
       # =========================================================
-      # 8. Budowanie llama.xcframework
+      # 9. Budowanie llama.xcframework
       # =========================================================
 
       - name: Build llama XCFramework
@@ -243,12 +318,13 @@ jobs:
 
           ./build-xcframework.sh
 
-          test -d build-apple/llama.xcframework
+          test -d \
+            build-apple/llama.xcframework
 
           echo "XCFramework built successfully."
 
       # =========================================================
-      # 9. Kopia frameworku do projektu SwiftUI
+      # 10. Kopia frameworku
       # =========================================================
 
       - name: Copy llama XCFramework
@@ -260,7 +336,7 @@ jobs:
           echo "XCFramework copied."
 
       # =========================================================
-      # 10. Kontrola zasobów PRZED buildem
+      # 11. Kontrola modelu przed Xcode build
       # =========================================================
 
       - name: Verify bundled model source
@@ -273,7 +349,7 @@ jobs:
           ls -lh "$MODEL"
 
       # =========================================================
-      # 11. Budowanie aplikacji
+      # 12. Budowanie aplikacji iOS
       # =========================================================
 
       - name: Build iOS application
@@ -299,7 +375,7 @@ jobs:
             build
 
       # =========================================================
-      # 12. Znalezienie .app
+      # 13. Znalezienie aplikacji
       # =========================================================
 
       - name: Locate application
@@ -312,7 +388,7 @@ jobs:
             -print
 
       # =========================================================
-      # 13. Konfiguracja aplikacji
+      # 14. Konfiguracja Info.plist
       # =========================================================
 
       - name: Configure application
@@ -352,7 +428,11 @@ jobs:
           echo "Application configured."
 
       # =========================================================
-      # 14. Kontrola modelu W GOTOWYM .app
+      # 15. Kontrola modelu W GOTOWYM .app
+      #
+      # Xcode powinien skopiować Resources/models do:
+      #
+      # QwenLocal.app/models/
       # =========================================================
 
       - name: Verify model inside app
@@ -362,12 +442,30 @@ jobs:
             -name "*.app" \
             | head -n 1)
 
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: .app not found."
+            exit 1
+          fi
+
           MODEL="$APP_PATH/models/ggml-model.gguf"
 
           if [ ! -f "$MODEL" ]; then
             echo "ERROR: Qwen model was NOT bundled into the app."
-            echo "Contents of app:"
-            find "$APP_PATH" -maxdepth 3 -type f | sort
+
+            echo
+            echo "Searching app for GGUF files:"
+            find "$APP_PATH" \
+              -type f \
+              -name "*.gguf" \
+              -print
+
+            echo
+            echo "App model directory:"
+            find "$APP_PATH/models" \
+              -maxdepth 2 \
+              -print \
+              2>/dev/null || true
+
             exit 1
           fi
 
@@ -376,7 +474,7 @@ jobs:
           ls -lh "$MODEL"
 
       # =========================================================
-      # 15. Kontrola modelu + projektu
+      # 16. Weryfikacja modelu i Info.plist
       # =========================================================
 
       - name: Verify Qwen Local 0.3
@@ -391,24 +489,29 @@ jobs:
 
           echo
           echo "===== MODEL ====="
-          ls -lh "$APP_PATH/models/ggml-model.gguf"
+          ls -lh \
+            "$APP_PATH/models/ggml-model.gguf"
 
           echo
           echo "===== PLIST ====="
+
+          echo "Display name:"
           /usr/libexec/PlistBuddy \
             -c "Print :CFBundleDisplayName" \
             "$APP_PATH/Info.plist"
 
+          echo "Bundle identifier:"
           /usr/libexec/PlistBuddy \
             -c "Print :CFBundleIdentifier" \
             "$APP_PATH/Info.plist"
 
+          echo "Version:"
           /usr/libexec/PlistBuddy \
             -c "Print :CFBundleShortVersionString" \
             "$APP_PATH/Info.plist"
 
       # =========================================================
-      # 16. Generowanie ikony Qwen Local
+      # 17. Generowanie ikony Qwen Local
       # =========================================================
 
       - name: Generate Qwen Local icon
@@ -421,7 +524,9 @@ jobs:
 
           let size = 1024
 
-          guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+          guard let colorSpace =
+              CGColorSpace(name: CGColorSpace.sRGB)
+          else {
               fatalError("No color space")
           }
 
@@ -529,7 +634,7 @@ jobs:
           ls -lh QwenIcon.png
 
       # =========================================================
-      # 17. Rozmiary ikon
+      # 18. Rozmiary ikon
       # =========================================================
 
       - name: Prepare icon files
@@ -567,7 +672,7 @@ jobs:
             --out "$APP_PATH/AppIcon-1024.png"
 
       # =========================================================
-      # 18. Rejestracja ikon
+      # 19. Rejestracja ikon
       # =========================================================
 
       - name: Configure app icons
@@ -628,7 +733,7 @@ jobs:
           echo "Icons configured."
 
       # =========================================================
-      # 19. Przygotowanie IPA
+      # 20. Przygotowanie IPA
       # =========================================================
 
       - name: Prepare IPA
@@ -648,7 +753,7 @@ jobs:
           echo "Payload prepared."
 
       # =========================================================
-      # 20. Tworzenie IPA
+      # 21. Tworzenie IPA
       # =========================================================
 
       - name: Create IPA
@@ -662,7 +767,7 @@ jobs:
           ls -lh QwenLocal-0.3.ipa
 
       # =========================================================
-      # 21. Ostateczna weryfikacja IPA
+      # 22. Ostateczna weryfikacja IPA
       # =========================================================
 
       - name: Verify IPA
@@ -682,7 +787,7 @@ jobs:
           echo "Qwen Local 0.3 IPA verification successful."
 
       # =========================================================
-      # 22. Artifact
+      # 23. Artifact
       # =========================================================
 
       - name: Upload IPA
