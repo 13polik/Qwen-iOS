@@ -1,514 +1,546 @@
 name: Build Qwen Local 0.3
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: macos-latest
+build:
+runs-on: macos-latest
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+steps:
+  - name: Checkout
+    uses: actions/checkout@v4
 
-      - name: Clone llama.cpp
-        run: |
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+  - name: Clone llama.cpp
+    run: |
+      git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 
-      - name: Download iOS platform
-        run: |
-          xcodebuild -downloadPlatform iOS
+  - name: Download iOS platform
+    run: |
+      xcodebuild -downloadPlatform iOS
 
-      - name: Download Qwen model
-        run: |
-          mkdir -p llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models
+  - name: Inspect llama.swiftui structure
+    run: |
+      echo "=== llama.swiftui files ==="
 
-          curl -L \
-            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" \
-            -o llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf
+      find llama.cpp/examples/llama.swiftui \
+        -maxdepth 5 \
+        -type f \
+        | sort \
+        | head -300
 
-          ls -lh llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf
+      echo
+      echo "=== Swift files ==="
 
-          SIZE=$(stat -f%z llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf)
+      find llama.cpp/examples/llama.swiftui \
+        -type f \
+        -name "*.swift" \
+        | sort
 
-          if [ "$SIZE" -lt 500000000 ]; then
-            echo "ERROR: Model file is too small."
-            exit 1
-          fi
+  - name: Download Qwen model
+    run: |
+      MODEL_DIR="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models"
 
-      - name: Configure default Qwen model
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-          import re
+      mkdir -p "$MODEL_DIR"
 
-          file = Path(
-              "llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift"
+      curl -L \
+        "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf" \
+        -o "$MODEL_DIR/ggml-model.gguf"
+
+      echo
+      echo "=== Downloaded model ==="
+
+      ls -lh "$MODEL_DIR/ggml-model.gguf"
+
+      SIZE=$(stat -f%z "$MODEL_DIR/ggml-model.gguf")
+
+      echo "Model size: $SIZE bytes"
+
+      if [ "$SIZE" -lt 500000000 ]; then
+        echo "ERROR: Model file is too small."
+        exit 1
+      fi
+
+  - name: Verify Qwen model
+    run: |
+      MODEL="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf"
+
+      if [ ! -f "$MODEL" ]; then
+        echo "ERROR: Qwen model was not downloaded."
+        exit 1
+      fi
+
+      echo "Qwen model found:"
+      ls -lh "$MODEL"
+
+  - name: Configure default Qwen model
+    run: |
+      python3 <<'PY'
+      from pathlib import Path
+      import re
+
+      file = Path(
+          "llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift"
+      )
+
+      if not file.exists():
+          print("ERROR: LlamaState.swift not found.")
+          print()
+          print("Searching for it:")
+
+          for p in Path("llama.cpp/examples/llama.swiftui").rglob("LlamaState.swift"):
+              print(p)
+
+          raise SystemExit(1)
+
+      text = file.read_text(encoding="utf-8")
+
+      pattern = re.compile(
+          r"private\s+let\s+defaultModels\s*:\s*\[Model\]\s*=\s*\["
+          r".*?"
+          r"\n\s*\]\s*\n",
+          re.DOTALL
+      )
+
+      replacement = '''private let defaultModels: [Model] = [
+          Model(
+              name: "Qwen2.5-1.5B-Instruct (Q4_K_M)",
+              url: "",
+              filename: "ggml-model.gguf",
+              status: "downloaded"
           )
+      ]
 
-          text = file.read_text()
+      '''
 
-          pattern = re.compile(
-              r"private\s+let\s+defaultModels:\s*\[Model\]\s*=\s*\["
-              r".*?"
-              r"\n\s*\]\s*\n",
-              re.DOTALL
+      new_text, count = pattern.subn(
+          replacement,
+          text,
+          count=1
+      )
+
+      if count != 1:
+          print("ERROR: Could not find defaultModels block.")
+          print()
+          print("Relevant section:")
+
+          start = text.find("defaultModels")
+
+          if start >= 0:
+              print(text[start:start + 5000])
+
+          raise SystemExit(1)
+
+      file.write_text(
+          new_text,
+          encoding="utf-8"
+      )
+
+      print("defaultModels successfully configured.")
+      PY
+
+  - name: Verify default Qwen configuration
+    run: |
+      FILE="llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift"
+
+      echo "=== Qwen configuration ==="
+
+      grep -A12 -B2 \
+        'defaultModels' \
+        "$FILE" \
+        || true
+
+  - name: Verify model resource configuration
+    run: |
+      echo "=== Xcode project resources ==="
+
+      grep -n \
+        "Resources/models" \
+        llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj \
+        || true
+
+      echo
+
+      grep -n \
+        "models in Resources" \
+        llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj \
+        || true
+
+  - name: Build llama xcframework
+    working-directory: llama.cpp
+    run: |
+      cmake \
+        -B build \
+        -G Xcode \
+        -DCMAKE_SYSTEM_NAME=iOS \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=OFF
+
+      cmake \
+        --build build \
+        --config Release \
+        -- -sdk iphoneos
+
+  - name: Locate llama build products
+    run: |
+      echo "=== Build products ==="
+
+      find llama.cpp/build \
+        \( -name "*.framework" -o -name "*.a" \) \
+        -print \
+        | head -200
+
+  - name: Inspect Xcode project
+    run: |
+      echo "=== Xcode project ==="
+
+      ls -lah \
+        llama.cpp/examples/llama.swiftui
+
+      echo
+
+      echo "=== Schemes ==="
+
+      xcodebuild \
+        -list \
+        -project \
+        llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj
+
+  - name: Build Qwen Local application
+    working-directory: llama.cpp/examples/llama.swiftui
+    run: |
+      xcodebuild \
+        -project llama.swiftui.xcodeproj \
+        -scheme llama.swiftui \
+        -configuration Release \
+        -sdk iphoneos \
+        -destination 'generic/platform=iOS' \
+        -archivePath "$GITHUB_WORKSPACE/QwenLocal.xcarchive" \
+        PRODUCT_BUNDLE_IDENTIFIER=pl.13polik.QwenLocal \
+        MARKETING_VERSION=0.3 \
+        CURRENT_PROJECT_VERSION=3 \
+        CODE_SIGNING_ALLOWED=NO \
+        CODE_SIGNING_REQUIRED=NO \
+        DEVELOPMENT_TEAM= \
+        archive
+
+  - name: Find application
+    run: |
+      APP=$(find \
+        QwenLocal.xcarchive/Products/Applications \
+        -maxdepth 2 \
+        -name "*.app" \
+        -print \
+        | head -1)
+
+      if [ -z "$APP" ]; then
+        echo "ERROR: Application was not found."
+        exit 1
+      fi
+
+      echo "APP=$APP" >> "$GITHUB_ENV"
+
+      echo
+      echo "Application found:"
+      echo "$APP"
+
+  - name: Inspect compiled application
+    run: |
+      echo "=== Application contents ==="
+
+      find "$APP" \
+        -maxdepth 4 \
+        -type f \
+        | sort \
+        | head -300
+
+  - name: Verify bundled Qwen model
+    run: |
+      MODEL="$APP/models/ggml-model.gguf"
+
+      echo "Checking:"
+      echo "$MODEL"
+
+      if [ ! -f "$MODEL" ]; then
+        echo
+        echo "ERROR: Qwen model was NOT included in the application bundle."
+        echo
+        echo "Searching entire application for GGUF files:"
+
+        find "$APP" \
+          -type f \
+          -name "*.gguf" \
+          -print
+
+        echo
+        echo "Searching for models directory:"
+
+        find "$APP" \
+          -type d \
+          -name "models" \
+          -print
+
+        exit 1
+      fi
+
+      echo
+      echo "Qwen model successfully bundled:"
+      ls -lh "$MODEL"
+
+  - name: Generate Qwen Local icon
+    run: |
+      mkdir -p icon
+
+      cat > icon/create_icon.swift <<'SWIFT'
+      import Foundation
+      import CoreGraphics
+      import ImageIO
+      import UniformTypeIdentifiers
+
+      let size = 1024
+
+      let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+      guard let context = CGContext(
+          data: nil,
+          width: size,
+          height: size,
+          bitsPerComponent: 8,
+          bytesPerRow: size * 4,
+          space: colorSpace,
+          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+      ) else {
+          fatalError("Could not create graphics context")
+      }
+
+      let rect = CGRect(
+          x: 0,
+          y: 0,
+          width: size,
+          height: size
+      )
+
+      context.setFillColor(
+          CGColor(
+              red: 0.07,
+              green: 0.08,
+              blue: 0.10,
+              alpha: 1
           )
+      )
 
-          replacement = '''private let defaultModels: [Model] = [
-              Model(
-                  name: "Qwen2.5-1.5B-Instruct (Q4_K_M)",
-                  url: "",
-                  filename: "ggml-model.gguf",
-                  status: "downloaded"
-              )
-          ]
+      context.fill(rect)
 
-          '''
+      let center = CGPoint(
+          x: CGFloat(size) / 2,
+          y: CGFloat(size) / 2
+      )
 
-          new_text, count = pattern.subn(replacement, text, count=1)
-
-          if count != 1:
-              print("ERROR: Could not find defaultModels block.")
-              print()
-              start = text.find("defaultModels")
-              if start >= 0:
-                  print(text[start:start + 5000])
-              raise SystemExit(1)
-
-          file.write_text(new_text)
-
-          print("defaultModels successfully configured.")
-          PY
-
-      - name: Configure Qwen sampler
-        run: |
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          file = Path(
-              "llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LibLlama.swift"
+      context.setFillColor(
+          CGColor(
+              red: 0.18,
+              green: 0.55,
+              blue: 1.0,
+              alpha: 1
           )
+      )
 
-          text = file.read_text()
-
-          old_pattern = re.compile(
-              r"let\s+sparams\s*=\s*llama_sampler_chain_default_params\(\)\s*"
-              r"self\.sampling\s*=\s*llama_sampler_chain_init\(sparams\)\s*"
-              r"llama_sampler_chain_add\(self\.sampling,\s*"
-              r"llama_sampler_init_temp\(0\.4\)\s*\)\s*"
-              r"llama_sampler_chain_add\(self\.sampling,\s*"
-              r"llama_sampler_init_dist\(1234\)\s*\)",
-              re.DOTALL
+      context.fillEllipse(
+          in: CGRect(
+              x: center.x - 300,
+              y: center.y - 300,
+              width: 600,
+              height: 600
           )
+      )
 
-          replacement = '''let modelVocab = llama_model_get_vocab(model)
-          self.vocab = modelVocab
-
-          let sparams = llama_sampler_chain_default_params()
-          self.sampling = llama_sampler_chain_init(sparams)
-
-          llama_sampler_chain_add(
-              self.sampling,
-              llama_sampler_init_top_k(40)
+      context.setFillColor(
+          CGColor(
+              red: 1,
+              green: 1,
+              blue: 1,
+              alpha: 1
           )
+      )
 
-          llama_sampler_chain_add(
-              self.sampling,
-              llama_sampler_init_top_p(0.90, 1)
+      context.fillEllipse(
+          in: CGRect(
+              x: center.x - 170,
+              y: center.y - 110,
+              width: 70,
+              height: 100
           )
+      )
 
-          let n_vocab = llama_vocab_n_tokens(modelVocab)
-
-          llama_sampler_chain_add(
-              self.sampling,
-              llama_sampler_init_penalties(
-                  n_vocab,
-                  64,
-                  1.08,
-                  0.0,
-                  0.0
-              )
+      context.fillEllipse(
+          in: CGRect(
+              x: center.x + 100,
+              y: center.y - 110,
+              width: 70,
+              height: 100
           )
+      )
 
-          llama_sampler_chain_add(
-              self.sampling,
-              llama_sampler_init_temp(0.65)
+      context.setStrokeColor(
+          CGColor(
+              red: 1,
+              green: 1,
+              blue: 1,
+              alpha: 1
           )
+      )
 
-          llama_sampler_chain_add(
-              self.sampling,
-              llama_sampler_init_dist(1234)
-          )'''
+      context.setLineWidth(35)
+      context.setLineCap(.round)
 
-          new_text, count = old_pattern.subn(replacement, text, count=1)
-
-          if count != 1:
-              print("ERROR: Could not find sampler block.")
-              start = text.find("sparams")
-              if start >= 0:
-                  print(text[start:start + 5000])
-              raise SystemExit(1)
-
-          file.write_text(new_text)
-
-          print("Sampler successfully configured.")
-          PY
-
-      - name: Verify llama API
-        run: |
-          grep -n "llama_sampler_init_penalties" llama.cpp/include/llama.h
-          grep -n "llama_vocab_n_tokens" llama.cpp/include/llama.h
-
-      - name: Verify model resource
-        run: |
-          test -f llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf
-
-          echo "Model resource:"
-          ls -lh \
-            llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf
-
-      - name: Check Xcode resources
-        run: |
-          grep -n "Resources/models" \
-            llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj || true
-
-          grep -n "models in Resources" \
-            llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj || true
-
-      - name: Build llama xcframework
-        working-directory: llama.cpp
-        run: |
-          mkdir -p build
-
-          cmake -B build \
-            -G Xcode \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF
-
-          cmake --build build \
-            --config Release \
-            -- -sdk iphoneos
-
-      - name: Locate llama library
-        run: |
-          find llama.cpp/build \
-            \( -name "*.framework" -o -name "*.a" \) \
-            -print | head -100
-
-      - name: Build SwiftUI application
-        working-directory: llama.cpp/examples/llama.swiftui
-        run: |
-          xcodebuild \
-            -project llama.swiftui.xcodeproj \
-            -scheme llama.swiftui \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
-            -archivePath "$GITHUB_WORKSPACE/QwenLocal.xcarchive" \
-            PRODUCT_BUNDLE_IDENTIFIER=pl.13polik.QwenLocal \
-            MARKETING_VERSION=0.3 \
-            CURRENT_PROJECT_VERSION=3 \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            DEVELOPMENT_TEAM= \
-            archive
-
-      - name: Find application
-        run: |
-          APP=$(find QwenLocal.xcarchive/Products/Applications \
-            -maxdepth 2 \
-            -name "*.app" \
-            -print \
-            | head -1)
-
-          if [ -z "$APP" ]; then
-            echo "ERROR: Application not found."
-            exit 1
-          fi
-
-          echo "APP=$APP" >> "$GITHUB_ENV"
-
-          echo "Application:"
-          echo "$APP"
-
-      - name: Verify bundled Qwen model
-        run: |
-          MODEL="$APP/models/ggml-model.gguf"
-
-          if [ ! -f "$MODEL" ]; then
-            echo "ERROR: Qwen model was NOT included in application bundle."
-            echo
-            echo "Application contents:"
-            find "$APP" -maxdepth 3 -type f | head -200
-            exit 1
-          fi
-
-          echo "Qwen model successfully bundled:"
-          ls -lh "$MODEL"
-
-      - name: Generate Qwen Local icon
-        run: |
-          mkdir -p icon
-
-          cat > icon/create_icon.swift <<'SWIFT'
-          import Foundation
-          import CoreGraphics
-          import ImageIO
-          import UniformTypeIdentifiers
-
-          let size = 1024
-          let colorSpace = CGColorSpaceCreateDeviceRGB()
-
-          guard let context = CGContext(
-              data: nil,
-              width: size,
-              height: size,
-              bitsPerComponent: 8,
-              bytesPerRow: size * 4,
-              space: colorSpace,
-              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-          ) else {
-              fatalError("Could not create CGContext")
-          }
-
-          let rect = CGRect(x: 0, y: 0, width: size, height: size)
-
-          context.setFillColor(
-              CGColor(
-                  red: 0.08,
-                  green: 0.08,
-                  blue: 0.10,
-                  alpha: 1
-              )
+      context.move(
+          to: CGPoint(
+              x: center.x - 160,
+              y: center.y + 120
           )
+      )
 
-          context.fill(rect)
-
-          let center = CGPoint(
-              x: CGFloat(size) / 2,
-              y: CGFloat(size) / 2
+      context.addCurve(
+          to: CGPoint(
+              x: center.x + 160,
+              y: center.y + 120
+          ),
+          control1: CGPoint(
+              x: center.x - 80,
+              y: center.y + 210
+          ),
+          control2: CGPoint(
+              x: center.x + 80,
+              y: center.y + 210
           )
+      )
 
-          context.setFillColor(
-              CGColor(
-                  red: 0.18,
-                  green: 0.55,
-                  blue: 1.0,
-                  alpha: 1
-              )
-          )
+      context.strokePath()
 
-          context.fillEllipse(
-              in: CGRect(
-                  x: center.x - 300,
-                  y: center.y - 300,
-                  width: 600,
-                  height: 600
-              )
-          )
+      guard let image = context.makeImage() else {
+          fatalError("Could not create image")
+      }
 
-          context.setFillColor(
-              CGColor(
-                  red: 1,
-                  green: 1,
-                  blue: 1,
-                  alpha: 1
-              )
-          )
+      let url = URL(
+          fileURLWithPath: "icon/QwenLocal.png"
+      )
 
-          context.fillEllipse(
-              in: CGRect(
-                  x: center.x - 170,
-                  y: center.y - 110,
-                  width: 70,
-                  height: 100
-              )
-          )
+      guard let destination = CGImageDestinationCreateWithURL(
+          url as CFURL,
+          UTType.png.identifier as CFString,
+          1,
+          nil
+      ) else {
+          fatalError("Could not create PNG destination")
+      }
 
-          context.fillEllipse(
-              in: CGRect(
-                  x: center.x + 100,
-                  y: center.y - 110,
-                  width: 70,
-                  height: 100
-              )
-          )
+      CGImageDestinationAddImage(
+          destination,
+          image,
+          nil
+      )
 
-          context.setStrokeColor(
-              CGColor(
-                  red: 1,
-                  green: 1,
-                  blue: 1,
-                  alpha: 1
-              )
-          )
+      guard CGImageDestinationFinalize(destination) else {
+          fatalError("Could not save icon")
+      }
+      SWIFT
 
-          context.setLineWidth(35)
-          context.setLineCap(.round)
+      swiftc \
+        icon/create_icon.swift \
+        -o icon/create_icon
 
-          context.move(
-              to: CGPoint(
-                  x: center.x - 160,
-                  y: center.y + 120
-              )
-          )
+      icon/create_icon
 
-          context.addCurve(
-              to: CGPoint(
-                  x: center.x + 160,
-                  y: center.y + 120
-              ),
-              control1: CGPoint(
-                  x: center.x - 80,
-                  y: center.y + 210
-              ),
-              control2: CGPoint(
-                  x: center.x + 80,
-                  y: center.y + 210
-              )
-          )
+      file icon/QwenLocal.png
 
-          context.strokePath()
+  - name: Add application icon
+    run: |
+      cp icon/QwenLocal.png "$APP/Icon-60.png"
+      cp icon/QwenLocal.png "$APP/Icon-76.png"
+      cp icon/QwenLocal.png "$APP/Icon-1024.png"
 
-          guard let image = context.makeImage() else {
-              fatalError("Could not create image")
-          }
+      /usr/libexec/PlistBuddy \
+        -c "Add :CFBundleIconFiles array" \
+        "$APP/Info.plist" \
+        2>/dev/null || true
 
-          let url = URL(
-              fileURLWithPath: "icon/QwenLocal.png"
-          )
+      /usr/libexec/PlistBuddy \
+        -c "Add :CFBundleIconFiles:0 string Icon-60.png" \
+        "$APP/Info.plist" \
+        2>/dev/null || true
 
-          guard let destination = CGImageDestinationCreateWithURL(
-              url as CFURL,
-              UTType.png.identifier as CFString,
-              1,
-              nil
-          ) else {
-              fatalError("Could not create PNG destination")
-          }
+      /usr/libexec/PlistBuddy \
+        -c "Add :CFBundleIconFiles:1 string Icon-76.png" \
+        "$APP/Info.plist" \
+        2>/dev/null || true
 
-          CGImageDestinationAddImage(
-              destination,
-              image,
-              nil
-          )
+      /usr/libexec/PlistBuddy \
+        -c "Add :CFBundleIconFiles:2 string Icon-1024.png" \
+        "$APP/Info.plist" \
+        2>/dev/null || true
 
-          guard CGImageDestinationFinalize(destination) else {
-              fatalError("Could not save PNG")
-          }
-          SWIFT
+  - name: Verify application
+    run: |
+      echo "=== Bundle identifier ==="
 
-          swiftc icon/create_icon.swift \
-            -o icon/create_icon
+      /usr/libexec/PlistBuddy \
+        -c "Print :CFBundleIdentifier" \
+        "$APP/Info.plist"
 
-          icon/create_icon
+      echo
+      echo "=== Version ==="
 
-          file icon/QwenLocal.png
+      /usr/libexec/PlistBuddy \
+        -c "Print :CFBundleShortVersionString" \
+        "$APP/Info.plist" \
+        2>/dev/null || true
 
-      - name: Create app icon sizes
-        run: |
-          mkdir -p "$APP/AppIcon.appiconset"
+      echo
+      echo "=== Model ==="
 
-          sips -z 60 60 \
-            icon/QwenLocal.png \
-            --out "$APP/AppIcon.appiconset/Icon-60.png"
+      ls -lh \
+        "$APP/models/ggml-model.gguf"
 
-          sips -z 120 120 \
-            icon/QwenLocal.png \
-            --out "$APP/AppIcon.appiconset/Icon-60@2x.png"
+      echo
+      echo "=== Icons ==="
 
-          sips -z 180 180 \
-            icon/QwenLocal.png \
-            --out "$APP/AppIcon.appiconset/Icon-60@3x.png"
+      ls -lh \
+        "$APP/Icon-"*.png
 
-          sips -z 76 76 \
-            icon/QwenLocal.png \
-            --out "$APP/AppIcon.appiconset/Icon-76.png"
+  - name: Create IPA
+    run: |
+      rm -rf Payload
 
-          sips -z 152 152 \
-            icon/QwenLocal.png \
-            --out "$APP/AppIcon.appiconset/Icon-76@2x.png"
+      mkdir -p Payload
 
-          sips -z 167 167 \
-            icon/QwenLocal.png \
-            --out "$APP/AppIcon.appiconset/Icon-83.5@2x.png"
+      cp -R "$APP" Payload/
 
-          sips -z 1024 1024 \
-            icon/QwenLocal.png \
-            --out "$APP/AppIcon.appiconset/Icon-1024.png"
+      zip \
+        -qry \
+        QwenLocal-0.3.ipa \
+        Payload
 
-      - name: Configure application plist
-        run: |
-          /usr/libexec/PlistBuddy \
-            -c "Add :CFBundleIconFiles array" \
-            "$APP/Info.plist" 2>/dev/null || true
+      echo
+      echo "IPA created:"
+      ls -lh QwenLocal-0.3.ipa
 
-          /usr/libexec/PlistBuddy \
-            -c "Add :CFBundleIconFiles:0 string Icon-60.png" \
-            "$APP/Info.plist" 2>/dev/null || true
+  - name: Verify IPA
+    run: |
+      echo "=== IPA contents ==="
 
-          /usr/libexec/PlistBuddy \
-            -c "Add :CFBundleIconFiles:1 string Icon-76.png" \
-            "$APP/Info.plist" 2>/dev/null || true
+      unzip -l QwenLocal-0.3.ipa \
+        | grep -E \
+        "ggml-model.gguf|Info.plist|Icon-60|Icon-76|Icon-1024"
 
-          /usr/libexec/PlistBuddy \
-            -c "Add :CFBundleIconFiles:2 string Icon-1024.png" \
-            "$APP/Info.plist" 2>/dev/null || true
+      echo
+      echo "=== IPA size ==="
 
-      - name: Copy icon into application
-        run: |
-          cp icon/QwenLocal.png "$APP/Icon-60.png"
+      ls -lh QwenLocal-0.3.ipa
 
-          cp icon/QwenLocal.png "$APP/Icon-76.png"
-
-          cp icon/QwenLocal.png "$APP/Icon-1024.png"
-
-      - name: Verify application
-        run: |
-          echo "=== APP ==="
-          find "$APP" -maxdepth 2 -type f | sort | head -200
-
-          echo
-          echo "=== MODEL ==="
-          ls -lh "$APP/models/ggml-model.gguf"
-
-          echo
-          echo "=== INFO ==="
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleIdentifier" \
-            "$APP/Info.plist"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleDisplayName" \
-            "$APP/Info.plist" 2>/dev/null || true
-
-      - name: Create IPA
-        run: |
-          mkdir -p Payload
-
-          cp -R "$APP" Payload/
-
-          zip -qry \
-            QwenLocal-0.3.ipa \
-            Payload
-
-          echo
-          echo "IPA created:"
-          ls -lh QwenLocal-0.3.ipa
-
-      - name: Verify IPA
-        run: |
-          unzip -l QwenLocal-0.3.ipa \
-            | grep -E \
-            "ggml-model.gguf|Info.plist|Icon-60|Icon-76|Icon-1024"
-
-      - name: Upload IPA
-        uses: actions/upload-artifact@v4
-        with:
-          name: QwenLocal-0.3-IPA
-          path: QwenLocal-0.3.ipa
-          retention-days: 7
+  - name: Upload IPA
+    uses: actions/upload-artifact@v4
+    with:
+      name: QwenLocal-0.3-IPA
+      path: QwenLocal-0.3.ipa
+      retention-days: 7
