@@ -1,4 +1,4 @@
-name: Build Qwen Local
+name: Build Qwen Local 0.2
 
 on:
   workflow_dispatch:
@@ -9,49 +9,49 @@ jobs:
 
     steps:
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 1. Pobranie llama.cpp
-      # ---------------------------------------------------------
+      # =========================================================
 
       - name: Clone llama.cpp
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 2. Pobranie platformy iOS
-      # ---------------------------------------------------------
+      # =========================================================
 
       - name: Download iOS platform
         run: |
           xcodebuild -downloadPlatform iOS
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 3. Budowanie llama.xcframework
-      # ---------------------------------------------------------
+      # =========================================================
 
       - name: Build llama XCFramework
         run: |
           cd llama.cpp
           ./build-xcframework.sh
 
-      # ---------------------------------------------------------
-      # 4. Pobranie Qwen 0.5B Q4_K_M
-      # ---------------------------------------------------------
+      # =========================================================
+      # 4. Pobranie Qwen2.5 1.5B
+      # =========================================================
 
-      - name: Download Qwen 0.5B
+      - name: Download Qwen 1.5B
         run: |
           mkdir -p model
 
           curl -L --fail --retry 3 \
             -o model/qwen.gguf \
-            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
-          echo "Qwen model:"
+          echo "Downloaded Qwen model:"
           ls -lh model/qwen.gguf
 
-      # ---------------------------------------------------------
-      # 5. Kopia frameworku do przykładowej aplikacji
-      # ---------------------------------------------------------
+      # =========================================================
+      # 5. Kopia frameworku
+      # =========================================================
 
       - name: Copy llama XCFramework
         run: |
@@ -61,20 +61,20 @@ jobs:
 
           echo "XCFramework copied."
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 6. Sprawdzenie projektu
-      # ---------------------------------------------------------
+      # =========================================================
 
       - name: Check Xcode project
         run: |
-          test -f llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj
+          test -f \
+            llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj
 
-          echo "Xcode project:"
-          ls -la llama.cpp/examples/llama.swiftui/
+          echo "Xcode project found."
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 7. Budowanie aplikacji
-      # ---------------------------------------------------------
+      # =========================================================
 
       - name: Build iOS application
         run: |
@@ -94,27 +94,22 @@ jobs:
             FRAMEWORK_FOLDER_PATH=./build-ios \
             build
 
-      # ---------------------------------------------------------
+      # =========================================================
       # 8. Znalezienie .app
-      # ---------------------------------------------------------
+      # =========================================================
 
       - name: Locate application
         run: |
-          echo "Searching for application..."
+          echo "Searching for .app..."
 
           find llama.cpp/build-ios \
             -type d \
             -name "*.app" \
             -print
 
-      # ---------------------------------------------------------
-      # 9. Przygotowanie Qwen w BUNDLE
-      #
-      # llama.swiftui szuka:
-      #
-      # models/ggml-model.gguf
-      #
-      # ---------------------------------------------------------
+      # =========================================================
+      # 9. Instalacja modelu w bundle
+      # =========================================================
 
       - name: Install Qwen into app bundle
         run: |
@@ -124,7 +119,7 @@ jobs:
             | head -n 1)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found"
+            echo "ERROR: .app not found."
             exit 1
           fi
 
@@ -133,14 +128,14 @@ jobs:
           mkdir -p "$APP_PATH/models"
 
           cp model/qwen.gguf \
-             "$APP_PATH/models/ggml-model.gguf"
+            "$APP_PATH/models/ggml-model.gguf"
 
-          echo "Model installed into:"
+          echo "Qwen model installed:"
           ls -lh "$APP_PATH/models/ggml-model.gguf"
 
-      # ---------------------------------------------------------
-      # 10. Zmiana nazwy aplikacji i Bundle ID
-      # ---------------------------------------------------------
+      # =========================================================
+      # 10. Konfiguracja aplikacji
+      # =========================================================
 
       - name: Configure application
         run: |
@@ -162,21 +157,18 @@ jobs:
             "$APP_PATH/Info.plist" || true
 
           /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleShortVersionString 1.0" \
+            -c "Set :CFBundleShortVersionString 0.2" \
             "$APP_PATH/Info.plist" || true
 
           /usr/libexec/PlistBuddy \
-            -c "Set :CFBundleVersion 1" \
+            -c "Set :CFBundleVersion 2" \
             "$APP_PATH/Info.plist" || true
 
           echo "Application configured."
 
-      # ---------------------------------------------------------
-      # 11. Wygenerowanie własnej ikony
-      #
-      # Tworzymy prostą ikonę Q:
-      # ciemne tło + jasne Q
-      # ---------------------------------------------------------
+      # =========================================================
+      # 11. Ikona Qwen Local
+      # =========================================================
 
       - name: Generate Qwen Local icon
         run: |
@@ -214,9 +206,16 @@ jobs:
               )
           )
 
-          context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+          context.fill(
+              CGRect(
+                  x: 0,
+                  y: 0,
+                  width: size,
+                  height: size
+              )
+          )
 
-          // Main Q circle
+          // Q
           context.setStrokeColor(
               CGColor(
                   red: 0.25,
@@ -237,28 +236,45 @@ jobs:
               )
           )
 
-          // Q tail
           context.setLineCap(.round)
           context.setLineWidth(90)
 
-          context.move(to: CGPoint(x: 650, y: 390))
-          context.addLine(to: CGPoint(x: 820, y: 210))
+          context.move(
+              to: CGPoint(
+                  x: 650,
+                  y: 390
+              )
+          )
+
+          context.addLine(
+              to: CGPoint(
+                  x: 820,
+                  y: 210
+              )
+          )
+
           context.strokePath()
 
           guard let image = context.makeImage() else {
               fatalError("Could not create image")
           }
 
-          guard let destination = CGImageDestinationCreateWithURL(
-              URL(fileURLWithPath: "QwenIcon.png") as CFURL,
-              UTType.png.identifier as CFString,
-              1,
-              nil
-          ) else {
+          guard let destination =
+              CGImageDestinationCreateWithURL(
+                  URL(fileURLWithPath: "QwenIcon.png") as CFURL,
+                  UTType.png.identifier as CFString,
+                  1,
+                  nil
+              )
+          else {
               fatalError("Could not create PNG destination")
           }
 
-          CGImageDestinationAddImage(destination, image, nil)
+          CGImageDestinationAddImage(
+              destination,
+              image,
+              nil
+          )
 
           guard CGImageDestinationFinalize(destination) else {
               fatalError("Could not write PNG")
@@ -271,9 +287,9 @@ jobs:
           file QwenIcon.png
           ls -lh QwenIcon.png
 
-      # ---------------------------------------------------------
-      # 12. Przygotowanie rozmiarów ikon
-      # ---------------------------------------------------------
+      # =========================================================
+      # 12. Rozmiary ikon
+      # =========================================================
 
       - name: Prepare icon files
         run: |
@@ -281,8 +297,6 @@ jobs:
             -type d \
             -name "*.app" \
             | head -n 1)
-
-          mkdir -p "$APP_PATH"
 
           sips -z 180 180 QwenIcon.png \
             --out "$APP_PATH/AppIcon-60@3x.png"
@@ -311,11 +325,9 @@ jobs:
           sips -z 1024 1024 QwenIcon.png \
             --out "$APP_PATH/AppIcon-1024.png"
 
-          echo "Icons created."
-
-      # ---------------------------------------------------------
-      # 13. Rejestracja ikon w Info.plist
-      # ---------------------------------------------------------
+      # =========================================================
+      # 13. Rejestracja ikon
+      # =========================================================
 
       - name: Configure app icons
         run: |
@@ -372,14 +384,9 @@ jobs:
             -c "Add :CFBundleIconFiles:8 string AppIcon-1024.png" \
             "$APP_PATH/Info.plist"
 
-          echo "Icon configuration:"
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleIconFiles" \
-            "$APP_PATH/Info.plist"
-
-      # ---------------------------------------------------------
-      # 14. Sprawdzenie modelu
-      # ---------------------------------------------------------
+      # =========================================================
+      # 14. Kontrola modelu
+      # =========================================================
 
       - name: Verify Qwen model
         run: |
@@ -388,17 +395,16 @@ jobs:
             -name "*.app" \
             | head -n 1)
 
-          test -f "$APP_PATH/models/ggml-model.gguf"
+          test -f \
+            "$APP_PATH/models/ggml-model.gguf"
 
-          echo "Qwen model found:"
-          ls -lh "$APP_PATH/models/ggml-model.gguf"
+          echo "Qwen 1.5B:"
+          ls -lh \
+            "$APP_PATH/models/ggml-model.gguf"
 
-          echo "Bundle:"
-          ls -la "$APP_PATH"
-
-      # ---------------------------------------------------------
-      # 15. Przygotowanie Payload
-      # ---------------------------------------------------------
+      # =========================================================
+      # 15. Przygotowanie IPA
+      # =========================================================
 
       - name: Prepare IPA
         run: |
@@ -410,37 +416,40 @@ jobs:
           rm -rf Payload
           mkdir Payload
 
-          cp -R "$APP_PATH" Payload/QwenLocal.app
+          cp -R \
+            "$APP_PATH" \
+            Payload/QwenLocal.app
 
-      # ---------------------------------------------------------
-      # 16. Pakowanie IPA
-      # ---------------------------------------------------------
+      # =========================================================
+      # 16. Tworzenie IPA
+      # =========================================================
 
       - name: Create IPA
         run: |
           rm -f QwenLocal.ipa
 
-          zip -qry QwenLocal.ipa Payload
+          zip -qry \
+            QwenLocal.ipa \
+            Payload
 
-          echo "IPA:"
           ls -lh QwenLocal.ipa
 
-      # ---------------------------------------------------------
-      # 17. Kontrola zawartości IPA
-      # ---------------------------------------------------------
+      # =========================================================
+      # 17. Weryfikacja
+      # =========================================================
 
       - name: Verify IPA
         run: |
           unzip -l QwenLocal.ipa | grep -E \
             "QwenLocal.app|ggml-model.gguf|AppIcon"
 
-      # ---------------------------------------------------------
-      # 18. Upload
-      # ---------------------------------------------------------
+      # =========================================================
+      # 18. Artifact
+      # =========================================================
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: QwenLocal-IPA
+          name: QwenLocal-0.2-IPA
           path: QwenLocal.ipa
           if-no-files-found: error
