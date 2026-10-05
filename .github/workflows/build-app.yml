@@ -8,34 +8,29 @@ jobs:
     runs-on: macos-latest
 
     steps:
-
       - name: Clone llama.cpp
         run: |
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
-          echo "llama.cpp cloned."
           git -C llama.cpp rev-parse HEAD
 
       - name: Download iOS platform
         run: |
           xcodebuild -downloadPlatform iOS
 
-      - name: Download Qwen 1.5B
+      - name: Download Qwen model
         run: |
           MODEL_DIR="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models"
 
           mkdir -p "$MODEL_DIR"
 
-          curl -L \
-            --fail \
-            --retry 3 \
-            --retry-delay 2 \
+          curl -L --fail --retry 3 \
             -o "$MODEL_DIR/ggml-model.gguf" \
             "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
 
-          echo "Downloaded Qwen model:"
+          test -f "$MODEL_DIR/ggml-model.gguf"
           ls -lh "$MODEL_DIR/ggml-model.gguf"
 
-      - name: Verify GGUF model
+      - name: Verify model
         run: |
           MODEL="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf"
 
@@ -46,18 +41,13 @@ jobs:
           echo "Model size: $SIZE bytes"
 
           if [ "$SIZE" -lt 500000000 ]; then
-            echo "ERROR: model is unexpectedly small."
+            echo "ERROR: Model is too small."
             exit 1
           fi
 
-          echo "GGUF model passed basic size check."
-
-      - name: Configure Qwen model
-        shell: bash
+      - name: Configure default Qwen model
         run: |
           FILE="llama.cpp/examples/llama.swiftui/llama.swiftui/Models/LlamaState.swift"
-
-          test -f "$FILE"
 
           python3 <<'PY'
           from pathlib import Path
@@ -70,7 +60,7 @@ jobs:
 
           text = path.read_text()
 
-          replacement = '''    private let defaultModels: [Model] = [
+          replacement = """    private let defaultModels: [Model] = [
               Model(
                   name: "Qwen2.5-1.5B-Instruct (Q4_K_M)",
                   url: "",
@@ -79,11 +69,11 @@ jobs:
               )
           ]
 
-          '''
+          """
 
           pattern = (
-              r'    private let defaultModels: \[Model\] = \[.*?\n'
-              r'    \]\n\n'
+              r"    private let defaultModels: \[Model\] = \[.*?"
+              r"    \]\n\n"
           )
 
           new_text, count = re.subn(
@@ -96,27 +86,19 @@ jobs:
 
           if count != 1:
               raise SystemExit(
-                  "ERROR: Could not locate defaultModels block."
+                  "Could not find defaultModels block."
               )
 
           path.write_text(new_text)
 
-          print("LlamaState.swift patched successfully.")
+          print("Default model configured.")
           PY
 
-          echo
-          echo "===== QWEN MODEL CONFIG ====="
+          grep -A9 "private let defaultModels" "$FILE"
 
-          grep -A9 \
-            "private let defaultModels" \
-            "$FILE"
-
-      - name: Configure Qwen sampling
-        shell: bash
+      - name: Configure sampler
         run: |
           FILE="llama.cpp/examples/llama.swiftui/llama.cpp.swift/LibLlama.swift"
-
-          test -f "$FILE"
 
           python3 <<'PY'
           from pathlib import Path
@@ -129,55 +111,52 @@ jobs:
 
           text = path.read_text()
 
-          # Make sure the vocabulary is initialized before
-          # the sampler uses it.
-          vocab_pattern = re.compile(
-              r'        self\.temporary_invalid_cchars = \[\]\n'
-              r'\n'
-              r'        let sparams = llama_sampler_chain_default_params\(\)'
+          # Initialize the vocabulary before using it.
+          init_pattern = re.compile(
+              r"        self\.temporary_invalid_cchars = \[\]\n"
+              r"\n"
+              r"        let sparams = llama_sampler_chain_default_params\(\)"
           )
 
-          vocab_replacement = '''        self.temporary_invalid_cchars = []
+          init_replacement = """        self.temporary_invalid_cchars = []
 
                   let modelVocab = llama_model_get_vocab(model)
                   self.vocab = modelVocab
 
-                  let sparams = llama_sampler_chain_default_params()'''
+                  let sparams = llama_sampler_chain_default_params()"""
 
-          text, vocab_count = vocab_pattern.subn(
-              vocab_replacement,
+          text, count = init_pattern.subn(
+              init_replacement,
               text,
               count=1
           )
 
-          if vocab_count != 1:
+          if count != 1:
               raise SystemExit(
-                  "ERROR: Could not locate sampler initialization."
+                  "Could not find sampler initialization."
               )
 
-          # Remove the old vocab assignment if it still exists later
-          # in the initializer.
+          # Remove the old vocabulary initialization.
           text = re.sub(
-              r'\n        vocab = llama_model_get_vocab\(model\)\n',
-              '\n',
+              r"\n        vocab = llama_model_get_vocab\(model\)\n",
+              "\n",
               text,
               count=1
           )
 
           sampler_pattern = re.compile(
-              r'        let sparams = llama_sampler_chain_default_params\(\)\n'
-              r'        self\.sampling = llama_sampler_chain_init\(sparams\)\n'
-              r'.*?'
-              r'        llama_sampler_chain_add\(self\.sampling, llama_sampler_init_dist\(1234\)\)',
+              r"        let sparams = llama_sampler_chain_default_params\(\)\n"
+              r"        self\.sampling = llama_sampler_chain_init\(sparams\)\n"
+              r".*?"
+              r"llama_sampler_chain_add\(self\.sampling, llama_sampler_init_dist\(1234\)\)",
               re.DOTALL
           )
 
-          sampler_replacement = '''        let sparams = llama_sampler_chain_default_params()
+          sampler_replacement = """        let sparams = llama_sampler_chain_default_params()
                   self.sampling = llama_sampler_chain_init(sparams)
 
-                  // Qwen Local 0.3 sampling.
+                  // Qwen Local 0.3 sampler
 
-                  // First reduce the candidate set.
                   llama_sampler_chain_add(
                       self.sampling,
                       llama_sampler_init_top_k(40)
@@ -188,7 +167,6 @@ jobs:
                       llama_sampler_init_top_p(0.90, 1)
                   )
 
-                  // Penalize recently repeated tokens.
                   let n_vocab = llama_vocab_n_tokens(modelVocab)
 
                   llama_sampler_chain_add(
@@ -202,85 +180,50 @@ jobs:
                       )
                   )
 
-                  // Temperature controls creativity.
                   llama_sampler_chain_add(
                       self.sampling,
                       llama_sampler_init_temp(0.65)
                   )
 
-                  // Randomized sampling.
                   llama_sampler_chain_add(
                       self.sampling,
                       llama_sampler_init_dist(1234)
-                  )'''
+                  )"""
 
-          new_text, sampler_count = sampler_pattern.subn(
+          new_text, count = sampler_pattern.subn(
               sampler_replacement,
               text,
               count=1
           )
 
-          if sampler_count != 1:
+          if count != 1:
               raise SystemExit(
-                  "ERROR: Current sampler block was not found."
+                  "Could not find current sampler block."
               )
 
           path.write_text(new_text)
 
-          print("LibLlama.swift patched successfully.")
+          print("Sampler configured.")
           PY
 
-          echo
-          echo "===== SAMPLER CONFIGURATION ====="
-
-          grep -A45 \
-            "Qwen Local 0.3 sampling" \
-            "$FILE"
-
-      - name: Verify llama.cpp sampler API
+      - name: Verify llama.cpp API
         run: |
           HEADER="llama.cpp/include/llama.h"
 
           test -f "$HEADER"
 
-          echo "Checking llama_sampler_init_penalties..."
+          grep -A8 "llama_sampler_init_penalties" "$HEADER" | head -n 12
 
-          grep -A8 \
-            "llama_sampler_init_penalties" \
-            "$HEADER" \
-            | head -n 12
+          grep "llama_vocab_n_tokens" "$HEADER"
 
-          echo
-          echo "Checking llama_vocab_n_tokens..."
-
-          grep \
-            "llama_vocab_n_tokens" \
-            "$HEADER"
-
-          echo
-          echo "Current llama.cpp sampler API detected."
-
-      - name: Check Xcode project
+      - name: Verify Xcode resources
         run: |
           PROJECT="llama.cpp/examples/llama.swiftui/llama.swiftui.xcodeproj/project.pbxproj"
 
           test -f "$PROJECT"
 
-          echo "Xcode project found."
-
-          echo
-          echo "Checking models resource..."
-
-          grep -n \
-            "models in Resources" \
-            "$PROJECT"
-
-          echo
-          echo "Checking models path..."
-
-          grep -n \
-            "path = models" \
-            "$PROJECT"
+          grep -n "models in Resources" "$PROJECT"
+          grep -n "path = models" "$PROJECT"
 
       - name: Build llama XCFramework
         run: |
@@ -288,30 +231,23 @@ jobs:
 
           ./build-xcframework.sh
 
-          test -d \
-            build-apple/llama.xcframework
+          test -d build-apple/llama.xcframework
 
-          echo "XCFramework built successfully."
-
-      - name: Copy llama XCFramework
+      - name: Copy XCFramework
         run: |
           cp -R \
             llama.cpp/build-apple/llama.xcframework \
             llama.cpp/examples/llama.swiftui/
 
-          echo "XCFramework copied."
-
-      - name: Verify bundled model source
+      - name: Verify model source
         run: |
           MODEL="llama.cpp/examples/llama.swiftui/llama.swiftui/Resources/models/ggml-model.gguf"
 
           test -f "$MODEL"
 
-          echo "Model that will be bundled:"
-
           ls -lh "$MODEL"
 
-      - name: Build iOS application
+      - name: Build iOS app
         run: |
           cd llama.cpp
 
@@ -321,7 +257,7 @@ jobs:
             -project examples/llama.swiftui/llama.swiftui.xcodeproj \
             -scheme llama.swiftui \
             -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
+            -destination "generic/platform=iOS" \
             -derivedDataPath build-ios \
             -configuration Release \
             CODE_SIGNING_REQUIRED=NO \
@@ -333,16 +269,7 @@ jobs:
             CURRENT_PROJECT_VERSION=3 \
             build
 
-      - name: Locate application
-        run: |
-          echo "Searching for .app..."
-
-          find llama.cpp/build-ios \
-            -type d \
-            -name "*.app" \
-            -print
-
-      - name: Configure application
+      - name: Find app
         run: |
           APP_PATH=$(find llama.cpp/build-ios \
             -type d \
@@ -350,11 +277,41 @@ jobs:
             | head -n 1)
 
           if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found."
+            echo "ERROR: App not found."
             exit 1
           fi
 
           echo "APP_PATH=$APP_PATH"
+
+      - name: Verify bundled model
+        run: |
+          APP_PATH=$(find llama.cpp/build-ios \
+            -type d \
+            -name "*.app" \
+            | head -n 1)
+
+          MODEL="$APP_PATH/models/ggml-model.gguf"
+
+          if [ ! -f "$MODEL" ]; then
+            echo "ERROR: Model was not bundled."
+
+            find "$APP_PATH" \
+              -type f \
+              -name "*.gguf" \
+              -print
+
+            exit 1
+          fi
+
+          echo "Model successfully bundled:"
+          ls -lh "$MODEL"
+
+      - name: Configure app
+        run: |
+          APP_PATH=$(find llama.cpp/build-ios \
+            -type d \
+            -name "*.app" \
+            | head -n 1)
 
           /usr/libexec/PlistBuddy \
             -c "Set :CFBundleDisplayName Qwen Local" \
@@ -376,87 +333,7 @@ jobs:
             -c "Set :CFBundleVersion 3" \
             "$APP_PATH/Info.plist" || true
 
-          echo "Application configured."
-
-      - name: Verify model inside app
-        run: |
-          APP_PATH=$(find llama.cpp/build-ios \
-            -type d \
-            -name "*.app" \
-            | head -n 1)
-
-          if [ -z "$APP_PATH" ]; then
-            echo "ERROR: .app not found."
-            exit 1
-          fi
-
-          MODEL="$APP_PATH/models/ggml-model.gguf"
-
-          if [ ! -f "$MODEL" ]; then
-            echo "ERROR: Qwen model was NOT bundled into the app."
-
-            echo
-            echo "Searching app for GGUF files:"
-
-            find "$APP_PATH" \
-              -type f \
-              -name "*.gguf" \
-              -print
-
-            echo
-            echo "App model directory:"
-
-            find "$APP_PATH/models" \
-              -maxdepth 2 \
-              -print \
-              2>/dev/null || true
-
-            exit 1
-          fi
-
-          echo "SUCCESS: Qwen model is inside the compiled app."
-
-          ls -lh "$MODEL"
-
-      - name: Verify Qwen Local 0.3
-        run: |
-          APP_PATH=$(find llama.cpp/build-ios \
-            -type d \
-            -name "*.app" \
-            | head -n 1)
-
-          echo "===== APP ====="
-
-          ls -lh "$APP_PATH"
-
-          echo
-          echo "===== MODEL ====="
-
-          ls -lh \
-            "$APP_PATH/models/ggml-model.gguf"
-
-          echo
-          echo "===== PLIST ====="
-
-          echo "Display name:"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleDisplayName" \
-            "$APP_PATH/Info.plist"
-
-          echo "Bundle identifier:"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleIdentifier" \
-            "$APP_PATH/Info.plist"
-
-          echo "Version:"
-
-          /usr/libexec/PlistBuddy \
-            -c "Print :CFBundleShortVersionString" \
-            "$APP_PATH/Info.plist"
-
-      - name: Generate Qwen Local icon
+      - name: Generate icon
         run: |
           cat > create_icon.swift <<'EOF'
           import Foundation
@@ -466,13 +343,10 @@ jobs:
 
           let size = 1024
 
-          guard let colorSpace =
-              CGColorSpace(name: CGColorSpace.sRGB)
-          else {
-              fatalError("No color space")
-          }
+          let colorSpace =
+              CGColorSpace(name: CGColorSpace.sRGB)!
 
-          guard let context = CGContext(
+          let context = CGContext(
               data: nil,
               width: size,
               height: size,
@@ -480,16 +354,14 @@ jobs:
               bytesPerRow: size * 4,
               space: colorSpace,
               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-          ) else {
-              fatalError("Could not create CGContext")
-          }
+          )!
 
           context.setFillColor(
               CGColor(
                   red: 0.08,
                   green: 0.10,
                   blue: 0.16,
-                  alpha: 1.0
+                  alpha: 1
               )
           )
 
@@ -507,7 +379,7 @@ jobs:
                   red: 0.25,
                   green: 0.75,
                   blue: 1.0,
-                  alpha: 1.0
+                  alpha: 1
               )
           )
 
@@ -523,38 +395,26 @@ jobs:
           )
 
           context.setLineCap(.round)
-          context.setLineWidth(90)
 
           context.move(
-              to: CGPoint(
-                  x: 650,
-                  y: 390
-              )
+              to: CGPoint(x: 650, y: 390)
           )
 
           context.addLine(
-              to: CGPoint(
-                  x: 820,
-                  y: 210
-              )
+              to: CGPoint(x: 820, y: 210)
           )
 
           context.strokePath()
 
-          guard let image = context.makeImage() else {
-              fatalError("Could not create image")
-          }
+          let image = context.makeImage()!
 
-          guard let destination =
+          let destination =
               CGImageDestinationCreateWithURL(
                   URL(fileURLWithPath: "QwenIcon.png") as CFURL,
                   UTType.png.identifier as CFString,
                   1,
                   nil
-              )
-          else {
-              fatalError("Could not create PNG destination")
-          }
+              )!
 
           CGImageDestinationAddImage(
               destination,
@@ -562,20 +422,15 @@ jobs:
               nil
           )
 
-          guard CGImageDestinationFinalize(destination) else {
-              fatalError("Could not write PNG")
-          }
+          CGImageDestinationFinalize(destination)
           EOF
 
           swiftc create_icon.swift -o create_icon
-
           ./create_icon
-
-          file QwenIcon.png
 
           ls -lh QwenIcon.png
 
-      - name: Prepare icon files
+      - name: Install icon files
         run: |
           APP_PATH=$(find llama.cpp/build-ios \
             -type d \
@@ -609,16 +464,12 @@ jobs:
           sips -z 1024 1024 QwenIcon.png \
             --out "$APP_PATH/AppIcon-1024.png"
 
-      - name: Configure app icons
+      - name: Configure icons
         run: |
           APP_PATH=$(find llama.cpp/build-ios \
             -type d \
             -name "*.app" \
             | head -n 1)
-
-          /usr/libexec/PlistBuddy \
-            -c "Delete :CFBundleIcons" \
-            "$APP_PATH/Info.plist" || true
 
           /usr/libexec/PlistBuddy \
             -c "Delete :CFBundleIconFiles" \
@@ -664,9 +515,7 @@ jobs:
             -c "Add :CFBundleIconFiles:8 string AppIcon-1024.png" \
             "$APP_PATH/Info.plist"
 
-          echo "Icons configured."
-
-      - name: Prepare IPA
+      - name: Create IPA
         run: |
           APP_PATH=$(find llama.cpp/build-ios \
             -type d \
@@ -674,29 +523,18 @@ jobs:
             | head -n 1)
 
           rm -rf Payload
+          mkdir Payload
 
-          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/QwenLocal.app
 
-          cp -R \
-            "$APP_PATH" \
-            Payload/QwenLocal.app
-
-          echo "Payload prepared."
-
-      - name: Create IPA
-        run: |
           rm -f QwenLocal-0.3.ipa
 
-          zip -qry \
-            QwenLocal-0.3.ipa \
-            Payload
+          zip -qry QwenLocal-0.3.ipa Payload
 
           ls -lh QwenLocal-0.3.ipa
 
       - name: Verify IPA
         run: |
-          echo "Checking IPA contents..."
-
           unzip -l QwenLocal-0.3.ipa | grep \
             "Payload/QwenLocal.app/models/ggml-model.gguf"
 
@@ -706,7 +544,6 @@ jobs:
           unzip -l QwenLocal-0.3.ipa | grep \
             "Payload/QwenLocal.app/Info.plist"
 
-          echo
           echo "Qwen Local 0.3 IPA verification successful."
 
       - name: Upload IPA
